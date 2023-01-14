@@ -1,10 +1,12 @@
-
 library(WGCNA)
+library(SummarizedExperiment)
 library(tidyverse)
-# library(comprehenr)
+library(comprehenr)
 # library(BioNERO)
 options(stringsAsFactors = FALSE)
 options(max.print = 100)
+
+outputDir <- "../outputs/"
 
 # Pick soft threshold
 get_soft_threshold <- function(rse, assayname = 'ranknorm', threads = NULL) {
@@ -34,7 +36,7 @@ get_soft_threshold <- function(rse, assayname = 'ranknorm', threads = NULL) {
 
 # Fit WGCNA
 fit_WGCNA <- function(rse, power, assayname = "ranknorm", threads = NULL, 
-                      saveTOMs = TRUE, loadTOM = FALSE, fileBase = "test",
+                      saveTOMs = FALSE, loadTOM = FALSE, fileBase = "test",
                       blocks = NULL) {
     if (!is.null(threads)) {
         WGCNA::allowWGCNAThreads(nThreads = threads)
@@ -51,7 +53,7 @@ fit_WGCNA <- function(rse, power, assayname = "ranknorm", threads = NULL,
     if (loadTOM && is.null(blocks)) {
         tryCatch(
             {
-                blocksFile <- paste0("outputs/", fileBase, "-blocks.rds")
+                blocksFile <- paste0(outputDir, fileBase, "-blocks.rds")
                 print(paste("Reading blocks from", blocksFile))
                 blocks <- readRDS(blocksFile)
             },
@@ -68,8 +70,8 @@ fit_WGCNA <- function(rse, power, assayname = "ranknorm", threads = NULL,
         randomSeed = 123, verbose = 5, maxBlockSize = 9000,
         TOMType = "signed",
         loadTOM = loadTOM, blocks = blocks,
-        saveTOMs = saveTOMs, 
-        saveTOMFileBase = paste0("outputs/", fileBase, "-TOM"),
+        saveTOMs = saveTOMs,
+        saveTOMFileBase = paste0(outputDir, fileBase, "-TOM"),
         power = power,
         networkType = 'signed hybrid',
         minModuleSize = 40, ### changed
@@ -88,7 +90,7 @@ fit_WGCNA <- function(rse, power, assayname = "ranknorm", threads = NULL,
 
     # Save blocks if it was null
     if (is.null(blocks) && saveTOMs) {
-        blocksFile <- paste0("outputs/", fileBase, "-blocks.rds")
+        blocksFile <- paste0(outputDir, fileBase, "-blocks.rds")
         print(paste("Saving blocks to", blocksFile))
         saveRDS(net$blocks, blocksFile)
     }
@@ -112,66 +114,44 @@ fit_WGCNA <- function(rse, power, assayname = "ranknorm", threads = NULL,
     return(net)
 }
 
+# Match the modules from one network to another and relabel
+match_modules <- function(source_net, target_net) {
+    # Match color of each gene from source to target
+    matched_colors <- WGCNA::matchLabels(source_net$colors, target_net$colors)
+    # names(matched_colors) <- names(source_net$colors)
+    # Get mapping from each old color to new
+    old <- unique(source_net$colors)
+    new <- unique(matched_colors)
+    # Relabel the variables in source net
+    source_net$colors <- matched_colors %>% c
+    source_net$IMC$modules <- matched_colors %>% c
+    ME_mapping <- setNames(paste0('ME', new), paste0('ME', old))
+    source_net$MEs <- source_net$MEs %>% rename(ME_mapping)
+    kME_mapping <- setNames(paste0('kME', new), paste0('kME', old))
+    source_net$KME <- source_net$KME %>% rename(kME_mapping)
+    return(source_net)
+}
 
-match_kME_by_module <- function(kME, name, colors=net$colors) {
+
+
+filter_kME_one_module <- function(kME, name, colors) {
     # Clean name
     name <- str_replace(name, "kME", "")
     # Set to NA if not this gene's module
     kME[colors != name] <- NA
     return(kME)
 }
-# order <- net$colors %>% table %>% sort
-# order <- paste0("kME", names(order)) %>% rev
-# kME_matched <- mapply(match_kME_by_module, net$KME, names(net$KME))[, order]
-# kME_matched[,-(1:50)] %>% summary
-
-plot_ngenes <- function(net) {
-    counts <- net$colors %>% table %>% 
-        as_tibble %>% rename_all(~ c('module','n')) %>% 
-        arrange(-n)
-
-    counts %>% 
-    mutate(module = factor(module, ordered=TRUE, levels=.$module)) %>% 
-    ggplot(aes(y=module, x=n, fill=module)) +
-    geom_col() + scale_fill_identity() +
-    geom_text(aes(label=n), hjust=0, angle=0) +
-    scale_y_discrete('module', limits=rev) +
-    coord_cartesian(clip='off') +
-    xlab('n genes') +
-    theme_classic() + theme(plot.margin=margin(r=20))
+filter_kME <- function(net) {
+    kME_filtered <- mapply(filter_kME_one_module,
+                          net$KME, names(net$KME),
+                          MoreArgs = list(colors=net$colors))
+    order <- net$colors %>% table %>% sort
+    order <- paste0("kME", names(order)) %>% rev
+    rownames(kME_filtered) <- rownames(net$KME)
+    return(kME_filtered[, order])
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Fit WGCNA to multiple splits
-fit_net_splits <- function(rse, n_splits = 2) {
-    nets <- list()
-    for (i in 1:n_splits) {
-        print(paste0("..fitting split ", i, "/", n_splits))
-        rse_split <- rse %>% split_samples
-        invisible(capture.output(
-            nets[[i]] <- make_nets(rse_split)
-        ))
-    }
-    print("Done.")
-    return(nets)
-}
 
 # Split rse data in two halves
 split_samples <- function(rse) {
@@ -190,14 +170,28 @@ make_nets <- function(rse_list, cor_method = "pearson", assayname = NULL) {
     }
     # Find soft threshold power for each split 
     sft_list <- lapply(rse_list, function(rse) {
-        rse %>% SFT_fit(net_type = "signed hybrid", cor_method = cor_method)
+        rse %>% get_soft_threshold(threads = 9)
     })
     # Get max of powers
     power <- to_vec(for(sft in sft_list) sft$power) %>% max
     # Fit nets
-    net_list <- lapply(rse_list, function(x) fit_wgcna(x, power))
+    net_list <- lapply(rse_list, function(x) fit_WGCNA(x, power, threads=9))
 
     return(net_list)
+}
+
+# Fit WGCNA to multiple splits
+fit_net_splits <- function(rse, n_splits = 2) {
+    nets <- list()
+    for (i in 1:n_splits) {
+        print(paste0("..fitting split ", i, "/", n_splits))
+        rse_split <- rse %>% split_samples
+        invisible(capture.output(
+            nets[[i]] <- make_nets(rse_split)
+        ))
+    }
+    print("Done.")
+    return(nets)
 }
 
 # Fit WGCNA with a given power
