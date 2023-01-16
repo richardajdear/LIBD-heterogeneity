@@ -111,6 +111,9 @@ fit_WGCNA <- function(rse, power, assayname = "ranknorm", threads = NULL,
     # Add KME to output
     net$KME <- WGCNA::signedKME(exp, net$MEs)
 
+    # Add gene counts
+    net$counts <- net$colors %>% table %>% sort(decreasing=TRUE)
+
     return(net)
 }
 
@@ -124,15 +127,16 @@ match_modules <- function(source_net, target_net) {
 
     # Get mapping from each old color to new
     old <- unique(source_net$colors)
-    new <- unique(matched_colors)
+    new <- unique(matched_colors) %>% c
+    source_net$mapping <- setNames(old, new)
 
     # Relabel the variables in source net
     source_net$colors <- matched_colors %>% c
     source_net$IMC$modules <- matched_colors %>% c
-    ME_mapping <- setNames(paste0('ME', new), paste0('ME', old))
-    source_net$MEs <- source_net$MEs %>% rename(ME_mapping)
-    kME_mapping <- setNames(paste0('kME', new), paste0('kME', old))
-    source_net$KME <- source_net$KME %>% rename(kME_mapping)
+    source_net$MEs <- source_net$MEs %>% rename_with(~ paste0('ME', new), paste0('ME', old))
+    source_net$KME <- source_net$KME %>% rename_with(~ paste0('kME', new), paste0('kME', old))
+    source_net$oldCounts <- source_net$counts
+    source_net$counts <- source_net$colors %>% table %>% sort(decreasing=TRUE)
 
     return(source_net)
 }

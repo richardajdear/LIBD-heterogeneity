@@ -1,5 +1,28 @@
 library(biomaRt)
 
+count_matches <- function(net_pair) {
+    A <- net_pair[[1]]
+    B <- net_pair[[2]]
+    modules <- names(A$counts)
+    gene_list_A <- names(A$colors) %>% split(A$colors)
+    gene_list_B <- names(B$colors) %>% split(B$colors)
+    
+    n_match <- setNames(rep(NA, length(modules)), modules)
+    pct_match <- setNames(rep(NA, length(modules)), modules)
+    for (module in modules) {
+        if (exists(module, where=gene_list_B)) {
+            matched <- sum(gene_list_A[[module]] %in% gene_list_B[[module]])
+        } else {
+            matched <- 0
+        }
+        total <- length(gene_list_A[[module]])
+        n_match[module] <- matched
+        pct_match[module] <- matched/total
+    }
+    return(data.frame(n_match, pct_match))
+}
+
+
 get_topN_matches_one_module <- function(source_weights, target_weights, 
                                         interval=1, how='topN') {
     # Sort the genes in source weights (dropping NAs)
@@ -66,7 +89,7 @@ get_GO_annotations <- function() {
 
 # Get enrichments for top n modules
 get_enrichments <- function(net, annotation, p = 0.05,
-                            n_modules = NULL,
+                            module_names = NULL,
                             bp_param = BiocParallel::SerialParam()) {
     # Define background genes, clean names of version
     all_genes <- names(net$colors) %>% str_replace("\\..*", "")
@@ -78,11 +101,10 @@ get_enrichments <- function(net, annotation, p = 0.05,
     # Get modules gene lists as a list
     modules <- split(all_genes, net$colors)
 
-    # Choose modules to test, in order of size
-    module_names <- net$colors %>% table %>% sort(decreasing=TRUE) %>% names
-    module_names <- module_names[module_names != 'grey']
-    if (!is.null(n_modules)) {
-        module_names <- module_names[1:n_modules]
+    # Choose modules to test in order of size if not specified
+    if (is.null(module_names)) {
+        module_names <- net$colors %>% table %>% sort(decreasing=TRUE) %>% names
+        module_names <- module_names[module_names != 'grey']
     }
     modules <- modules[module_names]
 
@@ -164,6 +186,34 @@ par_enrich <- function(genes, reference, genesets, adj = "BH",
 
     return(tab.out)
 }
+
+
+count_enrichment_matches <- function(enrichments_pair) {
+    A <- enrichments_pair[[1]]
+    B <- enrichments_pair[[2]]
+    modules <- unique(A$module)
+    enrichment_list_A <- A$TermID %>% split(A$module)
+    enrichment_list_B <- B$TermID %>% split(B$module)
+    
+    GO_A <- setNames(rep(NA, length(modules)), modules)
+    GO_B <- setNames(rep(NA, length(modules)), modules)
+    GO_match <- setNames(rep(NA, length(modules)), modules)
+    GO_pct_match <- setNames(rep(NA, length(modules)), modules)
+    for (module in modules) {
+        if (exists(module, where=enrichment_list_B)) {
+            matched <- sum(enrichment_list_A[[module]] %in% enrichment_list_B[[module]])
+        } else {
+            matched <- 0
+        }
+        
+        GO_A[module] <- length(enrichment_list_A[[module]])
+        GO_B[module] <- length(enrichment_list_B[[module]])
+        GO_match[module] <- matched
+        GO_pct_match[module] <- matched/GO_A[module]
+    }
+    return(data.frame(GO_A, GO_B, GO_match, GO_pct_match))
+}
+
 
 
 # View enrichments as table

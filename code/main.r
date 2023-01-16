@@ -49,6 +49,7 @@ source("../code/wgcna.r")
 rse_noQSV_split <- rse_noQSV %>% split_samples
 split_nets_noQSV <- make_nets(rse_noQSV_split)
 saveRDS(split_nets_noQSV, "../outputs/split_nets_noQSV.rds")
+
 split_nets_noQSV <- readRDS("../outputs/split_nets_noQSV.rds")
 
 
@@ -78,11 +79,15 @@ split_nets_noQSV_matched <- list(
     split_nets_noQSV[[1]],
     split_nets_noQSV[[2]] %>% match_modules(split_nets_noQSV[[1]])
 )
+# Check matched modules from each split
+module_names <- split_nets_noQSV[[1]]$colors %>% table %>% sort(decreasing=TRUE) %>% 
+                names %>% .[.!='grey'] %>% .[1:11]
 enrichments_split_noQSV <- split_nets_noQSV_matched %>% lapply(get_enrichments,
-            annotation=GO, n_modules=10, bp_param=MulticoreParam(workers=8)
+            annotation=GO, module_names=module_names
+            # , bp_param=MulticoreParam(workers=8)
             )
 
-enrichments_split_noQSV[[1]] %>% pivot_enrichments_table
+enrichments_split_noQSV[[2]] %>% pivot_enrichments_table %>% write_csv("../outputs/enrichments_noQSV_split2.csv")
 
 
 net <- split_nets_noQSV_matched[[2]]
@@ -93,49 +98,32 @@ test <- par_enrich(
                 genesets = annotation_list
             )
 
-
-count_enrichment_matches <- function(enrichments_pair) {
-    A <- enrichments_pair[[1]]
-    B <- enrichments_pair[[2]]
-    modules <- unique(A$module)
-    enrichment_list_A <- A$TermID %>% split(A$module)
-    enrichment_list_B <- B$TermID %>% split(B$module)
-    
-    match_pct <- setNames(rep(NA, length(enrichment_list_A)), modules)
-    for (module in modules) {
-        if (exists(module, where=enrichment_list_B)) {
-            matched <- sum(enrichment_list_A[[module]] %in% enrichment_list_B[[module]])
-        } else {
-            matched <- 0
-        }
-        total <- length(enrichment_list_A[module])
-        match_pct[module] <- matched/total
-    }
-    return(match_pct)
-}
-
 count_enrichment_matches(enrichments_split_noQSV)
 
 
 # Make table of comparisons
-
+source("../code/wgcna.r")
 # module A | n_genes | module B | n_genes | matched | pct_matched | top 100 kME pct_matched | enrichments A | enrichments B | pct enrichments
 split_nets_noQSV_matched <- list(
     split_nets_noQSV[[1]],
     split_nets_noQSV[[2]] %>% match_modules(split_nets_noQSV[[1]])
 )
-split_nets_noQSV_matched[[1]]$colors %>% table %>% sort(decreasing=TRUE)
+A <- split_nets_noQSV_matched[[1]]$counts %>% as_tibble %>% rename_with(~c('module', 'genes'))
+B <- split_nets_noQSV_matched[[2]]$oldCounts %>% as_tibble %>% rename_with(~c('module', 'genes')) %>% 
+    mutate(new_name = split_nets_noQSV_matched[[2]]$counts %>% names, .before='genes')
 
-source_net <- split_nets_noQSV[[1]]
-target_net <- split_nets_noQSV[[2]]
+topN_100 <- topN %>% rownames_to_column('topN') %>% 
+    pivot_longer(-topN, names_to='module', values_to='pct_kME100') %>% 
+    filter(topN==100) %>% dplyr::select(-topN) %>% 
+    mutate(module=str_replace(module, "kME","")) %>% 
+    mutate(pct_kME100 = pct_kME100/100)
 
-split_nets_noQSV[[1]] %>% match_modules(split_nets_noQSV[[2]]) %>% 
-.$colors %>% table %>% sort(decreasing = TRUE)
-
-
-
-
-
+A %>% 
+    left_join(B, by='module') %>% rename_with(~ c('module', 'genes', 'module_B', 'genes_B')) %>% 
+    left_join(count_matches(split_nets_noQSV_matched) %>% rownames_to_column('module'), by='module') %>% 
+    left_join(topN_100, by='module') %>% 
+    left_join(count_enrichment_matches(enrichments_split_noQSV) %>% rownames_to_column('module'), by='module') %>% 
+    write_csv("../outputs/table_noQSV_splits.csv")
 
 ### Gene-qSV correlations
 
