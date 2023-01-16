@@ -114,14 +114,18 @@ fit_WGCNA <- function(rse, power, assayname = "ranknorm", threads = NULL,
     return(net)
 }
 
+
 # Match the modules from one network to another and relabel
 match_modules <- function(source_net, target_net) {
+
     # Match color of each gene from source to target
     matched_colors <- WGCNA::matchLabels(source_net$colors, target_net$colors)
-    # names(matched_colors) <- names(source_net$colors)
+    names(matched_colors) <- names(source_net$colors)
+
     # Get mapping from each old color to new
     old <- unique(source_net$colors)
     new <- unique(matched_colors)
+
     # Relabel the variables in source net
     source_net$colors <- matched_colors %>% c
     source_net$IMC$modules <- matched_colors %>% c
@@ -129,9 +133,9 @@ match_modules <- function(source_net, target_net) {
     source_net$MEs <- source_net$MEs %>% rename(ME_mapping)
     kME_mapping <- setNames(paste0('kME', new), paste0('kME', old))
     source_net$KME <- source_net$KME %>% rename(kME_mapping)
+
     return(source_net)
 }
-
 
 
 filter_kME_one_module <- function(kME, name, colors) {
@@ -152,13 +156,13 @@ filter_kME <- function(net) {
 }
 
 
-
 # Split rse data in two halves
 split_samples <- function(rse) {
     n_samples <- dim(rse)[2]
     mask <- sample(c(TRUE, FALSE), size = n_samples, replace = TRUE)
     return(list(rse[, mask], rse[, !mask]))
 }
+
 
 # Fit WGCNA on a list of rse, using the max SFT power
 make_nets <- function(rse_list, cor_method = "pearson", assayname = NULL) {
@@ -193,6 +197,18 @@ fit_net_splits <- function(rse, n_splits = 2) {
     print("Done.")
     return(nets)
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 # Fit WGCNA with a given power
 # Include the expression data and kME in the output

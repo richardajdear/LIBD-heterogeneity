@@ -1,0 +1,177 @@
+library(biomaRt)
+
+get_topN_matches_one_module <- function(source_weights, target_weights, 
+                                        interval=1, how='topN') {
+    # Sort the genes in source weights (dropping NAs)
+    source_sorted <- order(-source_weights, na.last='NA') %>% suppressWarnings
+    # Rank the genes in target weights (keeping NAs)
+    target_ranked <- rank(-target_weights, na.last='keep')
+    # Sort the target ranks by the source order
+    target_ranked_sorted <- target_ranked[source_sorted]
+    # Create an empty array to hold counts for top N, at intervals
+    points <- seq(interval,length(source_sorted), interval)
+    arr <- rep(NA, length(points))
+    for (i in points) {
+        if (how == 'topN') {
+            # For each i, check how many genes with source_rank<i have target_rank<i
+            arr[i/interval] <- sum(target_ranked_sorted[1:i] <= i, na.rm=TRUE)
+        } else {
+            # For each i, check how many genes with source_rank<i have target_rank not NA
+            arr[i/interval] <- sum(!is.na(target_ranked_sorted[1:i]))
+        }
+    }
+    return(arr)
+}
+
+# Count how many of the topN genes of source module are in topN genes of target module
+get_topN_matches <- function(source_net, target_net, 
+                             n_modules=20, interval=25, how='topN') {
+    # Match target modules to source modules
+    # NB: unmatched modules are moved to the back
+    target_matched <- target_net %>% match_modules(source_net)
+    # Get kME of only within-module genes, drop grey module
+    kME_source <- source_net %>% filter_kME() %>% .[, colnames(.)!="kMEgrey"]
+    kME_target <- target_matched %>% filter_kME() %>% .[, colnames(.)!="kMEgrey"]
+    # Re-order target to match source, only keeping matched modules
+    matched_modules <- colnames(kME_source)[colnames(kME_source) %in% colnames(kME_target)]
+    kME_target <- kME_target[, matched_modules]
+    # Move unmatched modules in source to back
+    unmatched_modules <- colnames(kME_source)[!(colnames(kME_source) %in% matched_modules)]
+    kME_source <- kME_source[, c(matched_modules, unmatched_modules)]
+
+    # For each module in source, run count topN matching function
+    # NB: must convert to dataframe to use with mapply
+    topN_list <- mapply(get_topN_matches_one_module,
+                        data.frame(kME_source[, 1:n_modules]),
+                        data.frame(kME_target[, 1:n_modules]),
+                        MoreArgs = list(interval=interval, how=how)
+                    )
+    # Combine list into dataframe, filling NAs
+    topN_df <- data.frame(lapply(topN_list, `length<-`, max(lengths(topN_list))))
+    rownames(topN_df) <- seq(1, nrow(topN_df))*interval
+    return(topN_df)
+}
+
+
+### Compute enrichment
+
+# Get GO annotations
+get_GO_annotations <- function() {
+    ensembl <- useMart("ensembl", dataset="hsapiens_gene_ensembl")
+    atts <- listAttributes(ensembl)
+    GO <- getBM(mart=ensembl, attributes=c('ensembl_gene_id','name_1006'))
+    GO <- GO[GO[2] != '', ]
+    return(GO)
+}
+
+# Get enrichments for top n modules
+get_enrichments <- function(net, annotation, p = 0.05,
+                            n_modules = NULL,
+                            bp_param = BiocParallel::SerialParam()) {
+    # Define background genes, clean names of version
+    all_genes <- names(net$colors) %>% str_replace("\\..*", "")
+
+    # Match annotations to background
+    annotation_matched <- annotation[annotation[,1] %in% all_genes, ]
+    annotation_list <- split(annotation_matched[, 1], annotation_matched[, 2])
+
+    # Get modules gene lists as a list
+    modules <- split(all_genes, net$colors)
+
+    # Choose modules to test, in order of size
+    module_names <- net$colors %>% table %>% sort(decreasing=TRUE) %>% names
+    module_names <- module_names[module_names != 'grey']
+    if (!is.null(n_modules)) {
+        module_names <- module_names[1:n_modules]
+    }
+    modules <- modules[module_names]
+
+    # Run enrichment for all modules
+    enrichment_allmodules <- BiocParallel::bplapply(
+        seq_along(modules), function(x) {
+            message("Enrichment analysis for module ",
+                        names(modules)[x], "...")
+            l <- par_enrich(
+                genes = modules[[x]],
+                reference = all_genes,
+                genesets = annotation_list
+            )
+
+            # Filter for significant
+            l <- l[l$padj < p, ]
+            return(l)
+    }, BPPARAM = bp_param)
+    names(enrichment_allmodules) <- names(modules)
+    
+    # Remove modules with no enrichments
+    enrichment_allmodules <- enrichment_allmodules[
+        vapply(enrichment_allmodules, nrow, numeric(1)) > 0]
+
+    # Combine into dataframe
+    enrichment_df <- enrichment_allmodules %>% bind_rows(.id='module')
+    return(enrichment_df)
+}
+
+# https://rdrr.io/github/almeidasilvaf/BioNERO/src/R/gcn_inference.R#sym-par_enrich
+#' Helper function to perform Fisher's Exact Test with parallel computing
+#'
+#' @param genes Character vector containing genes on which enrichment will
+#' be tested.
+#' @param reference Character vector containing genes to be used as background.
+#' @param genesets List of functional annotation categories.
+#' (e.g., GO, pathway, etc.) with their associated genes.
+#' @param adj Multiple testing correction method.
+#' @param bp_param BiocParallel back-end to be used.
+#' Default: BiocParallel::SerialParam()
+#'
+#' @return Results of Fisher's Exact Test in a data frame with TermID,
+#' number of associated genes, number of genes in reference set,
+#' P-value and adjusted P-value.
+#'
+#' @importFrom stats p.adjust fisher.test
+#' @importFrom BiocParallel bplapply SerialParam
+#' @noRd
+par_enrich <- function(genes, reference, genesets, adj = "BH",
+                       bp_param = BiocParallel::SerialParam()) {
+
+    reference <- reference[!reference %in% genes]
+
+    tab <- BiocParallel::bplapply(seq_along(genesets), function(i) {
+
+        RinSet <- sum(reference %in% genesets[[i]])
+        RninSet <- length(reference) - RinSet
+        GinSet <- sum(genes %in% genesets[[i]])
+        GninSet <- length(genes) - GinSet
+        fmat <- matrix(
+            c(GinSet, RinSet, GninSet, RninSet),
+            nrow = 2, ncol = 2, byrow = FALSE
+        )
+        colnames(fmat) <- c("inSet", "ninSet")
+        rownames(fmat) <- c("genes", "reference")
+        fish <- stats::fisher.test(fmat, alternative = "greater")
+        pval <- fish$p.value
+        inSet <- RinSet + GinSet
+        res <- c(GinSet, inSet, pval)
+        return(res)
+    }, BPPARAM = bp_param)
+
+    rtab <- do.call(rbind, tab)
+    rtab <- data.frame(as.vector(names(genesets)), rtab)
+    rtab <- rtab[order(rtab[, 4]), ]
+    colnames(rtab) <- c("TermID", "genes", "all", "pval")
+    padj <- stats::p.adjust(rtab$pval, method = adj)
+    tab.out <- data.frame(rtab, padj)
+
+    return(tab.out)
+}
+
+
+# View enrichments as table
+pivot_enrichments_table <- function(enrichments) {
+    l <- list()
+    for (e in unique(enrichments$module)) {
+        l[[e]] <- enrichments %>% filter(module==e) %>% .$TermID
+    }
+    df <- lapply(l, `length<-`, max(lengths(l))) %>% bind_cols
+    return(df)
+}

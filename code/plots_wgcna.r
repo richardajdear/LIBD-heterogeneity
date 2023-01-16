@@ -1,4 +1,6 @@
+library(reshape2)
 library(ggplot2)
+library(pals)
 
 plot_ngenes <- function(net) {
     counts <- net$colors %>% table %>% 
@@ -72,12 +74,12 @@ plot_kME_topN <- function(net) {
 
 get_overlap <- function(net_pair, relabel=TRUE) {
     # Get overlaps, optionally match, and reorder by size
-    modules1 <- net_pair[[1]]$genes_and_modules$Modules
-    modules2 <- net_pair[[2]]$genes_and_modules$Modules
+    modules1 <- net_pair[[1]]$colors
+    modules2 <- net_pair[[2]]$colors
 
     if (relabel) {
         modules2 <- WGCNA::matchLabels(modules2, modules1)
-    } 
+    }
     overlap <- WGCNA::overlapTable(modules1, modules2)
 
     all_colours <- WGCNA::standardColors(200)
@@ -97,7 +99,7 @@ plot_overlap_counts <- function(net_pair, relabel=TRUE) {
 
     overlap$countTable %>% melt() %>%
     left_join(overlap$pTable %>% melt, by=c("Var1", "Var2")) %>%
-    rename(y=Var1, x=Var2, n=value.x, p=value.y) %>%
+    dplyr::rename(y=Var1, x=Var2, n=value.x, p=value.y) %>%
     mutate(y=factor(y, ordered=T, levels=colours_y)) %>%
     mutate(x=factor(x, ordered=T, levels=colours_x)) %>%
     ggplot(aes(y=y, x=x, fill=n)) +
