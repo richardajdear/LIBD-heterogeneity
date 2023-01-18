@@ -45,10 +45,15 @@ net_noQSV <- fit_WGCNA(rse_noQSV, power=4, threads = 9,
 plot_ngenes(net_noQSV)
 
 # Splitting into random halves
+cor <- WGCNA::cor
 source("../code/wgcna.r")
 rse_noQSV_split <- rse_noQSV %>% split_samples
 split_nets_noQSV <- make_nets(rse_noQSV_split)
 saveRDS(split_nets_noQSV, "../outputs/split_nets_noQSV.rds")
+
+rse_QSV_split <- rse_QSV %>% split_samples
+split_nets_QSV <- make_nets(rse_QSV_split)
+saveRDS(split_nets_QSV, "../outputs/split_nets_QSV.rds")
 
 split_nets_noQSV <- readRDS("../outputs/split_nets_noQSV.rds")
 
@@ -90,6 +95,19 @@ enrichments_split_noQSV <- split_nets_noQSV_matched %>% lapply(get_enrichments,
 enrichments_split_noQSV[[2]] %>% pivot_enrichments_table %>% write_csv("../outputs/enrichments_noQSV_split2.csv")
 
 
+split_nets_QSV_matched <- list(
+    split_nets_QSV[[1]],
+    split_nets_QSV[[2]] %>% match_modules(split_nets_QSV[[1]])
+)
+# Check matched modules from each split
+module_names <- split_nets_QSV[[1]]$colors %>% table %>% sort(decreasing=TRUE) %>% 
+                names %>% .[.!='grey'] %>% .[1:11]
+enrichments_split_QSV <- split_nets_QSV_matched %>% lapply(get_enrichments,
+            annotation=GO, module_names=module_names
+            # , bp_param=MulticoreParam(workers=8)
+            )
+
+
 net <- split_nets_noQSV_matched[[2]]
 annotation <- GO
 test <- par_enrich(
@@ -124,6 +142,33 @@ A %>%
     left_join(topN_100, by='module') %>% 
     left_join(count_enrichment_matches(enrichments_split_noQSV) %>% rownames_to_column('module'), by='module') %>% 
     write_csv("../outputs/table_noQSV_splits.csv")
+
+
+split_nets_QSV_matched <- list(
+    split_nets_QSV[[1]],
+    split_nets_QSV[[2]] %>% match_modules(split_nets_QSV[[1]])
+)
+A <- split_nets_QSV_matched[[1]]$counts %>% as_tibble %>% rename_with(~c('module', 'genes'))
+B <- split_nets_QSV_matched[[2]]$oldCounts %>% as_tibble %>% rename_with(~c('module', 'genes')) %>% 
+    mutate(new_name = split_nets_QSV_matched[[2]]$counts %>% names, .before='genes')
+
+topN_QSV <- get_topN_matches(split_nets_QSV[[1]], split_nets_QSV[[2]], how='topN', n_modules=20)
+plot_topN_lines(topN_QSV) +
+ggtitle('% of top N genes by kME retained in *top N genes of* matched module, random splits, QSV')
+
+topN_100 <- topN_QSV %>% rownames_to_column('topN') %>% 
+    pivot_longer(-topN, names_to='module', values_to='pct_kME100') %>% 
+    filter(topN==100) %>% dplyr::select(-topN) %>% 
+    mutate(module=str_replace(module, "kME","")) %>% 
+    mutate(pct_kME100 = pct_kME100/100)
+
+A %>% 
+    left_join(B, by='module') %>% rename_with(~ c('module', 'genes', 'module_B', 'genes_B')) %>% 
+    left_join(count_matches(split_nets_QSV_matched) %>% rownames_to_column('module'), by='module') %>% 
+    left_join(topN_100, by='module') %>% 
+    left_join(count_enrichment_matches(enrichments_split_QSV) %>% rownames_to_column('module'), by='module') %>% 
+    write_csv("../outputs/table_QSV_splits.csv")
+
 
 ### Gene-qSV correlations
 
