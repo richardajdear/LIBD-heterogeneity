@@ -1,6 +1,7 @@
 ### Setup and load data
 options(stringsAsFactors = FALSE)
 options(max.print = 100)
+enableWGCNAThreads(nThreads = 9)
 
 setwd("code")
 
@@ -56,6 +57,55 @@ split_nets_QSV <- make_nets(rse_QSV_split)
 saveRDS(split_nets_QSV, "../outputs/split_nets_QSV.rds")
 
 split_nets_noQSV <- readRDS("../outputs/split_nets_noQSV.rds")
+split_nets_QSV <- readRDS("../outputs/split_nets_QSV.rds")
+
+
+
+### Module preservation statistics
+multiExpr_QSV <- list(
+    A = list(data=t(assays(rse_QSV_split[[1]])[['ranknorm']])),
+    B = list(data=t(assays(rse_QSV_split[[2]])[['ranknorm']]))
+)
+multiExpr_noQSV <- list(
+    A = list(data=t(assays(rse_noQSV_split[[1]])[['ranknorm']])),
+    B = list(data=t(assays(rse_noQSV_split[[2]])[['ranknorm']]))
+)
+
+multiColor_QSV <- list(
+    A = split_nets_QSV[[1]]$colors,
+    B = split_nets_QSV[[2]]$colors
+)
+multiColor_noQSV <- list(
+    A = split_nets_noQSV[[1]]$colors,
+    B = split_nets_noQSV[[2]]$colors
+)
+
+mp_noQSV = modulePreservation(
+    multiData = multiExpr_noQSV,
+    multiColor = multiColor_noQSV,
+    networkType = 'signed hybrid',
+    nPermutations = 1000,
+    randomSeed = 1,
+    parallelCalculation = FALSE,
+    verbose = 3
+)
+save(mp_noQSV, file='../outputs/modulePreservation_noQSV.RData')
+mp_QSV = modulePreservation(
+    multiData = multiExpr_QSV,
+    multiColor = multiColor_QSV,
+    networkType = 'signed hybrid',
+    nPermutations = 1000,
+    randomSeed = 1,
+    parallelCalculation = FALSE,
+    verbose = 3
+)
+save(mp_QSV, file='../outputs/modulePreservation_QSV.RData')
+
+
+mp_noQSV$preservation$Z[[1]][[2]][WGCNA::standardColors(10),c('Zdensity.pres','Zconnectivity.pres')]
+mp_noQSV$accuracy$Z[[1]][[2]][WGCNA::standardColors(10),c('moduleSize','Z.accuracy')]
+mp_QSV$preservation$Z[[1]][[2]][WGCNA::standardColors(10),c('Zdensity.pres','Zconnectivity.pres')]
+mp_QSV$accuracy$Z[[1]][[2]][WGCNA::standardColors(10),c('moduleSize','Z.accuracy')]
 
 
 ### Analyse stability

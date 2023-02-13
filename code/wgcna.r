@@ -34,6 +34,7 @@ get_soft_threshold <- function(rse, assayname = 'ranknorm', threads = NULL) {
     return(fit)
 }
 
+
 # Fit WGCNA
 fit_WGCNA <- function(rse, power, assayname = "ranknorm", threads = NULL, 
                       saveTOMs = FALSE, loadTOM = FALSE, fileBase = "test",
