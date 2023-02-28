@@ -28,7 +28,7 @@ rse_norm_genes <- rse_regressed %>% normalise_genes
 saveRDS(rse_norm_genes, "../outputs/rse_processed_QSV.rds")
 
 rse_QSV <- readRDS("../outputs/rse_processed_QSV.rds")
-rse_noQSV <- readRDS("../outputs/rse_processed_noQSV.rds")
+rrse_noQSV <- readRDS("../outputs/rse_processed_noQSV.rds")
 
 
 ### Fit WGCNA

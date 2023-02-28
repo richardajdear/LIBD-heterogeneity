@@ -10,7 +10,7 @@ outputDir <- "../outputs/"
 
 # Pick soft threshold
 get_soft_threshold <- function(rse, assayname = 'ranknorm', threads = NULL) {
-    if (!is.null(threads)) {
+    if (!is.null(threads)) {e
         WGCNA::allowWGCNAThreads(nThreads = threads)
         WGCNAnThreads()
     }
