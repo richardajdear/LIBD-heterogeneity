@@ -3,17 +3,19 @@ library("jaffelab")
 library("limma")
 
 match_rse_tx_samples <- function(rse_tx, rse_gene) {
-    # For multi-lane samples, use first entry to match
-    retained_samples <- sapply(rse_norm_samples$SAMPLE_ID, `[[`, 1)
+    # For multi-lane samples, use first entry to match gene & transcript data
+    retained_samples <- sapply(rse_gene$SAMPLE_ID, `[[`, 1)
     tx_samples <- sapply(rse_tx$SAMPLE_ID, `[[`, 1)
     rse_tx_matched <- rse_tx[, tx_samples %in% retained_samples]
+    # Copy sample data so that same formula can be used for computing qSVs
+    colData(rse_tx_matched) <- colData(rse_gene)
     return(rse_tx_matched)
 }
 
 make_qsvs <- function(rse_tx, formula = "~ Age + Sex + Race") {
-    # Merge covariates
-    rse_tx <- jaffelab::merge_rse_metrics(rse_tx)
-    rse_tx$RIN <- sapply(rse_tx$RIN, mean)
+    # # Merge covariates
+    # rse_tx <- jaffelab::merge_rse_metrics(rse_tx)
+    # rse_tx$RIN <- sapply(rse_tx$RIN, mean)
 
     # Design matrix of tx data
     mod_tx <- model.matrix(as.formula(formula),

@@ -1,3 +1,4 @@
+library(glue)
 library(jaffelab)
 library(recount)
 library(matrixStats)
@@ -8,9 +9,10 @@ library(RNOmni)
 library(WGCNA)
 library(tidyverse)
 
+source("../code/qsva.r")
+
 # Cleanup covariates like 'concordMapRate', 'overallMapRate', 'mitoRate' etc
-# and recount RPKM
-# (data from one sample may include multiple ‘lanes’)
+# and recount RPKM (data from one sample may include multiple ‘lanes’)
 merge_covariates <- function(rse) {
     rse_merged <- jaffelab::merge_rse_metrics(rse)
     assays(rse_merged)$RPKM     <- recount::getRPKM(
@@ -19,24 +21,33 @@ merge_covariates <- function(rse) {
 
     # Take mean of RIN numbers
     rse_merged$RIN <- sapply(rse_merged$RIN, mean)
+
+    print(glue("Merged data from multi-lane samples."))
     return(rse_merged)
 }
 
 # Select samples
-select_samples <- function(rse) {
-    minAge = -1; maxAge = 150; minRin = 6;
-    diagnosis = c("Control"); race = c("AA","CAUC")
-
+select_samples <- function(rse,
+    minAge = 17, # Min SCZ diagnosis age is 17
+    maxAge = 150,
+    minRin = 6,
+    region = c("DLPFC"), # First look only at DLPFC
+    race = c("AA", "CAUC"),
+    diagnosis = c("Control")
+) {
     rse_subset <- rse %>% SummarizedExperiment::subset(
         subset = TRUE, # keep all rows (genes)
         select =
             (Age                >=   minAge       )   &
             (Age                <=   maxAge       )   &
+            (Region            %in%  region       )   &
             (Race              %in%  race         )   &
             (Dx                %in%  diagnosis    )   &
             (sapply(RIN, mean)  >=   minRin       )   &
             (!is.na(snpPC1)                       )
     )
+
+    print(glue("Selected {dim(rse_subset)[2]} of {dim(rse)[2]} samples."))
     return(rse_subset)
 }
 
@@ -49,9 +60,10 @@ clean_outlier_samples <- function(rse, sd_threshold = 3) {
     mean_IAC_zscore <- scale(matrixStats::rowMeans2(IAC))
     outlier_samples <- abs(mean_IAC_zscore) > sd_threshold
     names(outlier_samples) <- rownames(IAC)
-    print(paste("Removed", sum(outlier_samples), "outlier samples"))
 
     rse <- rse[, as.vector(!outlier_samples)]
+
+    print(glue("Removed {sum(outlier_samples)} outliers leaving {dim(rse)[2]} samples."))
     return(rse)
 }
 
@@ -70,14 +82,16 @@ clean_genes <- function(rse) {
     gene_filter_3 <- as.vector(abs(scale(median_exp_filtered_12)) <  3)
     genes_to_keep <- names(median_exp_filtered_12)[gene_filter_3]
 
-    rse <- rse %>% SummarizedExperiment::subset(
+    rse_clean <- rse %>% SummarizedExperiment::subset(
         subset = (
             (gencodeID %in% genes_to_keep) &
             # Also remove gene symbol 'MT-' (for mitochondrial genes)
             (!grepl("^MT-",Symbol))
         )
   )
-  return(rse)
+
+  print(glue("Filtered {dim(rse)[1]-dim(rse_clean)[1]} of {dim(rse)[1]} genes."))
+  return(rse_clean)
 }
 
 get_cell_proportions <- function(rse, assayname = 'RPKM', method = "SVD", nmarkers = 50) {
@@ -95,6 +109,8 @@ get_cell_proportions <- function(rse, assayname = 'RPKM', method = "SVD", nmarke
     zz <- cbind(zz1,zz2)
 
     colData(rse) <- cbind(colData(rse), zz)
+
+    print(glue("Added cell proportion estimates from BRETIGEA."))
     return(rse)
 }
 
@@ -105,19 +121,28 @@ normalise_samples <- function(rse) {
     exp <- assays(rse, withDimnames = FALSE)$logRPKM
     exp_norm <- preprocessCore::normalize.quantiles(exp)
     assays(rse, withDimnames = FALSE)$logRPKM_quant_normalised <- exp_norm
+
+    print(glue("Normalised logRPKM quantiles using preprocessCore."))
     return(rse)
 }
 
 # Regress out covariates
 regress_covariates <- function(rse, rse_tx, 
                                assayname = 'logRPKM_quant_normalised',
-                               formula = "~ Age + Sex + Race", 
+                               formula = "~ Age + Sex + Race",
                                n_qsvs = NULL,
                                method = 'libd', P = 0) {
-    source("qsva.r")
+    source("../code/qsva.r")
+    print(glue("Regressing covariates..."))
+
     rse_tx_matched <- match_rse_tx_samples(rse_tx, rse)
+    print(glue("... matched gene & transcript samples"))
     qsvs <- make_qsvs(rse_tx_matched, formula = formula)
+    print(glue("... made qSVs"))
     rse_clean <- get_residuals(rse, assayname, formula, qsvs, n_qsvs = n_qsvs)
+    print(glue("... computed residuals"))
+
+    print(glue("Regressed covariates."))
     return(rse_clean)
 }
 
@@ -128,5 +153,7 @@ normalise_genes <- function(rse,
     exp <- assays(rse, withDimnames = FALSE)[[assayname]]
     exp_ranknorm <- t(apply(exp, 1, RNOmni::RankNorm))
     assays(rse, withDimnames = FALSE)$ranknorm <- exp_ranknorm
+
+    print(glue("Normalised genes by rank using RNOmni."))
     return(rse)
 }

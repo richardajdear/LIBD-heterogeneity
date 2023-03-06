@@ -10,7 +10,7 @@ outputDir <- "../outputs/"
 
 # Pick soft threshold
 get_soft_threshold <- function(rse, assayname = 'ranknorm', threads = NULL) {
-    if (!is.null(threads)) {e
+    if (!is.null(threads)) {
         WGCNA::allowWGCNAThreads(nThreads = threads)
         WGCNAnThreads()
     }
@@ -119,48 +119,6 @@ fit_WGCNA <- function(rse, power, assayname = "ranknorm", threads = NULL,
 }
 
 
-# Match the modules from one network to another and relabel
-match_modules <- function(source_net, target_net) {
-
-    # Match color of each gene from source to target
-    matched_colors <- WGCNA::matchLabels(source_net$colors, target_net$colors)
-    names(matched_colors) <- names(source_net$colors)
-
-    # Get mapping from each old color to new
-    old <- unique(source_net$colors)
-    new <- unique(matched_colors) %>% c
-    source_net$mapping <- setNames(old, new)
-
-    # Relabel the variables in source net
-    source_net$colors <- matched_colors %>% c
-    source_net$IMC$modules <- matched_colors %>% c
-    source_net$MEs <- source_net$MEs %>% rename_with(~ paste0('ME', new), paste0('ME', old))
-    source_net$KME <- source_net$KME %>% rename_with(~ paste0('kME', new), paste0('kME', old))
-    source_net$oldCounts <- source_net$counts
-    source_net$counts <- source_net$colors %>% table %>% sort(decreasing=TRUE)
-
-    return(source_net)
-}
-
-
-filter_kME_one_module <- function(kME, name, colors) {
-    # Clean name
-    name <- str_replace(name, "kME", "")
-    # Set to NA if not this gene's module
-    kME[colors != name] <- NA
-    return(kME)
-}
-filter_kME <- function(net) {
-    kME_filtered <- mapply(filter_kME_one_module,
-                          net$KME, names(net$KME),
-                          MoreArgs = list(colors=net$colors))
-    order <- net$colors %>% table %>% sort
-    order <- paste0("kME", names(order)) %>% rev
-    rownames(kME_filtered) <- rownames(net$KME)
-    return(kME_filtered[, order])
-}
-
-
 # Split rse data in two halves
 split_samples <- function(rse) {
     n_samples <- dim(rse)[2]
@@ -203,6 +161,48 @@ fit_net_splits <- function(rse, n_splits = 2) {
     return(nets)
 }
 
+
+
+# Match the modules from one network to another and relabel
+match_modules <- function(source_net, target_net) {
+
+    # Match color of each gene from source to target
+    matched_colors <- WGCNA::matchLabels(source_net$colors, target_net$colors)
+    names(matched_colors) <- names(source_net$colors)
+
+    # Get mapping from each old color to new
+    old <- unique(source_net$colors)
+    new <- unique(matched_colors) %>% c
+    source_net$mapping <- setNames(old, new)
+
+    # Relabel the variables in source net
+    source_net$colors <- matched_colors %>% c
+    source_net$IMC$modules <- matched_colors %>% c
+    source_net$MEs <- source_net$MEs %>% rename_with(~ paste0('ME', new), paste0('ME', old))
+    source_net$KME <- source_net$KME %>% rename_with(~ paste0('kME', new), paste0('kME', old))
+    source_net$oldCounts <- source_net$counts
+    source_net$counts <- source_net$colors %>% table %>% sort(decreasing=TRUE)
+
+    return(source_net)
+}
+
+
+filter_kME_one_module <- function(kME, name, colors) {
+    # Clean name
+    name <- str_replace(name, "kME", "")
+    # Set to NA if not this gene's module
+    kME[colors != name] <- NA
+    return(kME)
+}
+filter_kME <- function(net) {
+    kME_filtered <- mapply(filter_kME_one_module,
+                          net$KME, names(net$KME),
+                          MoreArgs = list(colors=net$colors))
+    order <- net$colors %>% table %>% sort
+    order <- paste0("kME", names(order)) %>% rev
+    rownames(kME_filtered) <- rownames(net$KME)
+    return(kME_filtered[, order])
+}
 
 
 

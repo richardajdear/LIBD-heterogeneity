@@ -1,8 +1,7 @@
 library(biomaRt)
+library(BiocParallel)
 
-count_matches <- function(net_pair) {
-    A <- net_pair[[1]]
-    B <- net_pair[[2]]
+count_matches <- function(A, B) {
     modules <- names(A$counts)
     gene_list_A <- names(A$colors) %>% split(A$colors)
     gene_list_B <- names(B$colors) %>% split(B$colors)
@@ -224,4 +223,57 @@ pivot_enrichments_table <- function(enrichments) {
     }
     df <- lapply(l, `length<-`, max(lengths(l))) %>% bind_cols
     return(df)
+}
+
+
+
+
+make_comparison_table <- function(source_net, target_net, n_modules=30, annotation=NULL) {
+    # Match target net to source net
+    target_net <- target_net %>% match_modules(source_net)
+    print("Matched modules.")
+
+    # Rename columns of count tables from source and target
+    source_counts <- source_net$counts %>% 
+        as_tibble %>% rename_with(~c('module', 'genes'))
+    target_counts <- target_net$oldCounts %>% 
+        as_tibble %>% rename_with(~c('module', 'genes')) %>% 
+        mutate(new_name = target_net$counts %>% names, .before='genes')
+
+    # Get match % of all genes in modules
+    match_rate_all_genes <- count_matches(source_net, target_net) %>% 
+        rownames_to_column('module')
+    print("Got match % of all genes in modules.")
+
+    # Get match % for top100 genes by kME for top 30 modules
+    topN <- get_topN_matches(source_net, target_net, how='', n_modules=n_modules)
+    match_rate_top100 <- topN %>% rownames_to_column('topN') %>% 
+        pivot_longer(-topN, names_to='module', values_to='pct_kME100') %>% 
+        filter(topN==100) %>% dplyr::select(-topN) %>% 
+        mutate(module=str_replace(module, "kME","")) %>% 
+        mutate(pct_kME100 = pct_kME100/100)
+    print("Got match % of top 100 genes in modules.")
+
+    summaryTable <- source_counts %>% 
+        left_join(target_counts, by='module') %>% 
+        rename_with(~ c('module', 'genes', 'module_B', 'genes_B')) %>% 
+        left_join(match_rate_all_genes, by='module') %>% 
+        left_join(match_rate_top100, by='module')
+
+    # Get match % of GO enrichments
+    if (!is.null(annotation)) {
+        module_names <- source_net$colors %>% table %>% sort(decreasing=TRUE) %>% 
+                    names %>% .[.!='grey'] %>% .[1:n_modules]
+        enrichments_list <- list(source_net, target_net) %>% lapply(get_enrichments,
+                annotation=annotation, module_names=module_names, bp_param=MulticoreParam(workers=8)
+                )
+        enrichment_matches <- count_enrichment_matches(enrichments_list) %>% 
+            rownames_to_column('module')
+        print("Got match % of module GO enrichments.")
+
+        summaryTable <- summaryTable %>% 
+        left_join(enrichment_matches, by='module')
+    }
+    
+    return(summaryTable)
 }
