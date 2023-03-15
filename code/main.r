@@ -1,7 +1,8 @@
 ### Setup and load data
 options(stringsAsFactors = FALSE)
 options(max.print = 100)
-enableWGCNAThreads(nThreads = 9)
+# enableWGCNAThreads(nThreads = 9)
+cor <- WGCNA::cor
 
 setwd("code")
 
@@ -18,19 +19,17 @@ rse_cell_proportions <- rse_clean_genes %>% get_cell_proportions
 rse_norm_samples <- rse_cell_proportions %>% normalise_samples
 saveRDS(rse_norm_samples, "../data/rse_norm_samples.rds")
 
-formula <- "~ Age + Sex + Race + mitoRate + rRNA_rate + totalAssignedGene + RIN +
-                         snpPC1 + snpPC2 + snpPC3 + snpPC4 + snpPC5 + 
-                         snpPC6 + snpPC7 + snpPC8 + snpPC9 + snpPC10 +
+formula <- "~ Dx + Age + Sex + Race + mitoRate + rRNA_rate + totalAssignedGene + RIN +
                          ast + end + mic + neu + oli + opc
                          "
 rse_regressed <- rse_norm_samples %>% 
-    regress_covariates(rse_tx, formula = formula, n_qsvs = 0)
+    regress_covariates(rse_tx, formula = formula, n_qsvs = 0, P=4)
 rse_norm_genes <- rse_regressed %>% normalise_genes
 
-saveRDS(rse_norm_genes, "../outputs/rse_processed_CTL_noQSV.rds")
+saveRDS(rse_norm_genes, "../outputs/rse_processed_noQSV.rds")
 
-rse_QSV <- readRDS("../outputs/rse_processed_CTL_QSV.rds")
-rse_noQSV <- readRDS("../outputs/rse_processed_CTL_noQSV.rds")
+rse_QSV <- readRDS("../outputs/rse_processed_QSV.rds")
+rse_noQSV <- readRDS("../outputs/rse_processed_noQSV.rds")
 
 
 ### Fit WGCNA
@@ -48,21 +47,23 @@ net_noQSV <- fit_WGCNA(rse_noQSV, power=4, threads = 9,
 plot_ngenes(net_noQSV)
 
 # Splitting into random halves
-cor <- WGCNA::cor
 source("../code/wgcna.r")
 rse_QSV_split <- rse_QSV %>% split_samples
 split_nets_QSV <- make_nets(rse_QSV_split)
 saveRDS(split_nets_QSV, "../outputs/split_nets_QSV.rds")
+print("Done QSV splits.\n")
 
 rse_noQSV_split <- rse_noQSV %>% split_samples
 split_nets_noQSV <- make_nets(rse_noQSV_split)
 saveRDS(split_nets_noQSV, "../outputs/split_nets_noQSV.rds")
+print("Done noQSV splits.\n")
 
 QSV_noGrey_genes <- names(net_QSV$colors[net_QSV$colors!='grey'])
 rse_noQSVnoGrey <- rse_noQSV[QSV_noGrey_genes,]
 rse_noQSVnoGrey_split <- rse_noQSVnoGrey %>% split_samples
 split_nets_noQSVnoGrey <- make_nets(rse_noQSVnoGrey_split)
 saveRDS(split_nets_noQSVnoGrey, "../outputs/split_nets_noQSVnoGrey.rds")
+print("Done noQSVnoGrey splits.\n")
 
 
 
@@ -180,13 +181,13 @@ count_enrichment_matches(enrichments_split_noQSV)
 
 # Make table of comparisons
 source("../code/wgcna.r")
+source("../code/analyse_coexp.r")
 # module A | n_genes | module B | n_genes | matched | pct_matched | top 100 kME pct_matched | enrichments A | enrichments B | pct enrichments
 
 source_net <- split_nets_QSV[[1]]
 target_net <- split_nets_QSV[[2]]
 
 GO <- get_GO_annotations()
-source("../code/analyse_coexp.r")
 
 
 split_nets_QSV <- readRDS("../outputs/split_nets_QSV.rds")
@@ -202,7 +203,7 @@ comparisonTable_noQSV <- make_comparison_table(split_nets_noQSV[[1]], split_nets
 comparisonTable_noQSV %>% write_csv("../outputs/comparisonTable_noQSV.csv")
 
 comparisonTable_noQSVnoGrey <- make_comparison_table(
-    split_nets_noQSVnoGrey[[1]], split_nets_noQSVnoGrey[[2]], n_modules=27, annotation=GO)
+    split_nets_noQSVnoGrey[[1]], split_nets_noQSVnoGrey[[2]], n_modules=20, annotation=GO)
 comparisonTable_noQSVnoGrey %>% write_csv("../outputs/comparisonTable_noQSVnoGrey.csv")
 
 
@@ -304,3 +305,48 @@ gene_modules_cor %>%
     geom_boxplot(position='dodge') +
     xlab('qSV') + ylab('gene-qSV correlation (absolute)') +
     theme_classic()
+
+
+### Gene qSV correlations for curiosity
+
+## Make qSVs to correlate with genes
+rse_tx_matched <- match_rse_tx_samples(rse_tx, rse_norm_samples)
+formula <- "~ Age + Sex + Race + mitoRate + rRNA_rate + totalAssignedGene + RIN +
+                         ast + end + mic + neu + oli + opc"
+qsvs <- make_qsvs(rse_tx_matched, formula)
+gene_qsvs_correlations <- assays(rse_norm_samples)[['logRPKM_quant_normalised']] %>% t %>% cor(qsvs)
+gene_qsvs_correlations %>% data.frame %>% rownames_to_column('ensembl_id') %>% 
+write_csv("../outputs/gene_qsv_correlations.csv")
+# plot gene qsvs corrs
+gene_qsvs_correlations %>% data.frame %>% 
+pivot_longer(everything(), names_to='qSV', values_to='r') %>% 
+mutate(qSV = factor(qSV, ordered=T, levels=unique(.$qSV))) %>% 
+ggplot(aes(x=r, color=qSV)) + geom_density() + theme_minimal() + 
+xlim(-1,1) + ggtitle('Distributions of gene-qSV correlations')
+# plot gene qsvs max corr
+gene_qsvs_correlations %>% 
+data.frame %>% 
+mutate(gene=row_number()) %>% 
+pivot_longer(-gene, names_to='qSV', values_to='r') %>%  
+group_by(gene) %>% summarise(max_abs=max(abs(r))) %>% 
+ggplot(aes(x=max_abs)) + 
+stat_ecdf(geom = "step", color='blue') +
+theme_minimal() + 
+scale_x_continuous(breaks=seq(0,1,.2), limits=c(0,1), name='max absolute correlation of gene to any qSV') + 
+ylab('% of genes') +
+ggtitle('Cumulative distribution of max absolute gene-qSV correlation')
+# plot gene qsvs corrs heatmap
+library(pals)
+gene_qsvs_correlations %>% data.frame %>% 
+mutate_all(function(x) ifelse(abs(x)<.5,0,x)) %>% 
+cor %>%
+data.frame %>% rownames_to_column('qSV_x') %>% 
+pivot_longer(-qSV_x, names_to='qSV_y', values_to='r') %>% 
+mutate(
+    qSV_x = factor(qSV_x, ordered=T, levels=unique(.$qSV_x)),
+    qSV_y = factor(qSV_y, ordered=T, levels=unique(.$qSV_y))
+) %>% 
+ggplot(aes(x=qSV_x, y=qSV_y, fill=r)) + geom_raster() + 
+scale_fill_gradientn(colors=rev(brewer.rdbu(200)), limits=c(-1,1)) + 
+theme_classic() + theme(aspect.ratio=1) + xlab('') + ylab('') +
+ggtitle('qSV-qSV correlations of gene-qSV correlations, filtered for ')

@@ -1,0 +1,262 @@
+---
+title: "qsva"
+format: html
+editor: visual
+---
+
+
+# LIBD qSVA tutorial
+
+http://bioconductor.org/packages/release/workflows/vignettes/RNAseq123/inst/doc/designmatrices.html
+
+https://github.com/LieberInstitute/qsvaR
+
+
+```{r}
+library("qsvaR")
+library("tximeta")
+library("limma")
+library("BiocFileCache")
+```
+
+```{r}
+## We'll download example data from the BrainSeq Phase II project
+## described at http://eqtl.brainseq.org/phase2/.
+##
+## We'll use BiocFileCache to cache these files so you don't have to download
+## them again for other examples.
+bfc <- BiocFileCache::BiocFileCache()
+rse_file <- BiocFileCache::bfcrpath(
+    "https://s3.us-east-2.amazonaws.com/libd-brainseq2/rse_tx_unfiltered.Rdata",
+    x = bfc
+)
+
+## Now that we have the data in our computer, we can load it.
+load(rse_file, verbose = TRUE)
+```
+
+```{r}
+## Next we get the degraded transcripts for qSVA from the "cell_component"
+## model
+DegTx <- getDegTx(rse_tx, type = "cell_component")
+
+## Now we can compute the Principal Components (PCs) of the degraded
+## transcripts
+pcTx <- getPCs(DegTx, "tpm")
+```
+
+```{r}
+## Using a simple statistical model we determine the number of PCs needed (k)
+mod <- model.matrix(~ Dx + Age + Sex + Race + Region,
+    data = colData(rse_tx)
+)
+k <- k_qsvs(DegTx, mod, "tpm")
+print(k)
+```
+
+```{r}
+qsvs <- get_qsvs(pcTx, k)
+dim(qsvs)
+```
+
+
+Differential expression
+
+
+```{r}
+## Add the qSVs to our statistical model
+mod_qSVA <- cbind(
+    mod,
+    qsvs
+)
+
+## Extract the transcript expression values and put them in the
+## log2(TPM + 1) scale
+txExprs <- log2(assays(rse_tx)$tpm + 1)
+
+## Run the standard linear model for differential expression
+fitTx <- lmFit(txExprs, mod_qSVA)
+eBTx <- eBayes(fitTx)
+```
+
+```{r}
+## Extract the differential expression results
+sigTx <- topTable(eBTx,
+    coef = 2,
+    p.value = 1, number = nrow(rse_tx)
+)
+```
+
+```{r}
+DEqual(sigTx)
+```
+
+```{r}
+DEqual(topTable(eBayes(lmFit(txExprs, mod)), coef = 2, p.value = 1, number = nrow(rse_tx)))
+```
+
+
+# What about WGCNA with qSVA?
+
+First get qSVs for DLPFC Controls from rse_tx
+
+
+```{r}
+rse_tx_controls = rse_tx[, rse_tx$Dx=='Control' & rse_tx$Region=='DLPFC']
+mod <- model.matrix(~ Age + Sex + Race,
+    data = colData(rse_tx_controls)
+)
+qsvs_wrapper <- qSVA(rse_tx = rse_tx_controls, type = "cell_component", mod = mod, assayname = "tpm")
+```
+
+
+Then filter for matching rse_gene
+
+
+```{r}
+rse_gene_controls = rse_gene[
+  rowRanges(rse_gene)$gene_type=='protein_coding',
+  rse_gene$Dx=='Control' & rse_gene$Dataset=='BrainSeq_Phase2_DLPFC']
+
+dim(rse_gene_controls)
+```
+
+
+First try naive WGCNA
+
+
+```{r}
+nets = list()
+```
+
+```{r}
+rse_gene_controls_clean = rse_gene_controls %>% 
+  exp_preprocess(remove_nonexpressed=T,
+                 min_exp=10,
+                 variance_filter=F,
+                 n=2000,
+                 Zk_filtering=F,
+                 cor_method='pearson',
+                 remove_confounders=F,
+                 vstransform=T
+                 )
+sft <- rse_gene_controls_clean %>% SFT_fit(net_type = "signed hybrid", cor_method = "pearson")
+sft$plot
+```
+
+```{r}
+net = rse_gene_controls_clean %>% 
+  exp2gcn(SFTpower = sft$power, net_type = "signed hybrid", cor_method = "pearson")
+nets['unadjusted'] = net
+plot_dendro_and_colors(net)
+plot_eigengene_network(net)
+plot_ngenes_per_module(net)
+```
+
+```{r, fig.height=8, fig.width=8}
+order = net$genes_and_modules %>% group_by(Modules) %>% summarize(n=n()) %>% arrange(-n)
+MEs = net$MEs
+MEs_qSVs = cbind(MEs, qsvs_wrapper)
+MEs_pivot = MEs_qSVs %>% tibble %>% 
+  pivot_longer(-(qSV1:qSV18), names_to='module', values_to='eigengene') %>%
+  pivot_longer(-(module:eigengene), names_to='qSV', values_to='qSV_value') %>%
+  mutate(module = str_replace(module, 'ME', '')) %>% 
+  mutate(module = factor(module, ordered=T, levels=order$Modules))
+
+cor = MEs_pivot %>% 
+  group_by(module, qSV) %>% 
+  summarise(r=cor.test(qSV_value, value)$estimate,
+            p=cor.test(qSV_value, value)$p.value
+            ) %>% 
+  mutate(star = case_when(p < 0.001 ~ '***',p < 0.01 ~ '**',p < 0.05 ~ '*', T ~ ''))
+
+MEs_pivot %>% 
+  ggplot(aes(x=RIN, y=value)) + 
+  geom_point(alpha=.5, size=1, aes(fill=module), shape=21, color='black') +
+  geom_text(data=cor, aes(x=5, y=-.2, label=paste('r =', round(r,2), star)), hjust=0) +
+  geom_smooth(method='lm') +
+  scale_fill_identity() +
+  #geom_hex() +
+  # scale_fill_viridis_b() +
+  facet_wrap(~module) + 
+  ylab('eigengene expression') +
+  theme_classic() + theme(aspect.ratio=1) +
+  ggtitle('Sample cluster expression vs RIN')
+```
+
+```{r, fig.height=8, fig.width=8}
+order = net$genes_and_modules %>% group_by(Modules) %>% summarize(n=n()) %>% arrange(-n)
+MEs = net$MEs
+MEs$RIN = colData(rse_gene_controls_clean)[,'RIN']
+MEs_pivot = MEs %>% tibble %>% 
+  pivot_longer(-RIN, names_to='module') %>%
+  mutate(module = str_replace(module, 'ME', '')) %>% 
+  mutate(module = factor(module, ordered=T, levels=order$Modules))
+
+cor = MEs_pivot %>% 
+  group_by(module) %>% 
+  summarise(r=cor.test(RIN, value)$estimate,
+            p=cor.test(RIN, value)$p.value
+            ) %>% 
+  mutate(star = case_when(p < 0.001 ~ '***',p < 0.01 ~ '**',p < 0.05 ~ '*', T ~ ''))
+
+MEs_pivot %>% 
+  ggplot(aes(x=RIN, y=value)) + 
+  geom_point(alpha=.5, size=1, aes(fill=module), shape=21, color='black') +
+  geom_text(data=cor, aes(x=5, y=-.2, label=paste('r =', round(r,2), star)), hjust=0) +
+  geom_smooth(method='lm') +
+  scale_fill_identity() +
+  #geom_hex() +
+  # scale_fill_viridis_b() +
+  facet_wrap(~module) + 
+  ylab('eigengene expression') +
+  theme_classic() + theme(aspect.ratio=1) +
+  ggtitle('Sample cluster expression vs RIN')
+```
+
+
+\-\--
+
+
+```{r}
+mask = (
+  (colData(rse_tx)$Dx == 'Control') &
+  (colData(rse_tx)$Region == 'DLPFC') &
+  (colData(rse_tx)$Age >= 11)
+)
+
+rse_tx_filter = rse_tx[mask, ]
+```
+
+
+Clean for WGCNA
+
+
+```{r}
+# Filter for protein coding
+filter_protein_coding = function(rse) {
+  mask = rowRanges(rse)@elementMetadata$gene_type == 'protein_coding'
+  return(rse[mask, ])
+}
+
+# Remove non expressed genes
+remove_nonexp_rse = function(rse) {
+  medians = assay(rse_tx) %>% rowMedians
+  return(rse[mask,])
+}
+
+# medians = assay(rse_tx_clean) %>% rowMedians
+# tibble(x=medians) %>% ggplot(aes(x)) + geom_histogram()
+
+rse_tx_clean = rse_tx_filter %>% 
+  filter_protein_coding
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+

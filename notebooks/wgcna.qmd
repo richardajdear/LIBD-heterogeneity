@@ -1,0 +1,430 @@
+---
+title: "wgcna"
+format: html
+editor: visual
+---
+
+```{r}
+#| message:FALSE
+library(WGCNA)
+library(BioNERO)
+library(DESeq2)
+library(biomartr)
+library(readxl)
+library(tidyverse)
+options(stringsAsFactors = FALSE)
+disableWGCNAThreads()
+```
+
+Load summarised data
+
+```{r}
+load("../data/rse_gene_BrainSeq_phases_1_2.n1627.Rdata")
+# Set rownames to ensemblID (ie remove gene version)
+rownames(rse_gene) = rowData(rse_gene)$ensemblID
+```
+
+Load clinical data
+
+```{r}
+clinical = read_excel("../data/Clin fields_ADS_subjects for UCAM collab_shared 2022.xlsx")
+clinical %>% filter(PrimaryDx!='Control') %>% .$AgeDeath %>% summary
+```
+
+Filter for Phase 1 control data
+
+```{r}
+# colData(rse_gene) %>% as_tibble %>% filter(Dataset=='BrainSeq_Phase1')
+rse_phase1 = rse_gene[, rse_gene@colData$Dataset=='BrainSeq_Phase1']
+rse_phase1_controls = rse_phase1[, rse_phase1@colData$Dx=='Control']
+rse_phase1_filter = rse_phase1_controls[
+  rse_phase1_controls@rowRanges$gene_type=='protein_coding', 
+  rse_phase1_controls@colData$Age>11
+]
+dim(rse_phase1_filter)
+```
+
+Age
+
+```{r}
+colData(rse_phase1_controls)$Age %>% summary
+colData(rse_phase1_controls) %>% data.frame %>% 
+  ggplot(aes(x=Age)) + geom_histogram(binwidth=1, fill='skyblue') + theme_classic() + 
+  geom_vline(xintercept=11, linetype=2, color='red')
+```
+
+Transcript type
+
+```{r}
+rowData(rse_phase1_controls) %>% data.frame %>% count(gene_type) %>% arrange(-n)
+```
+
+Median expression
+
+```{r}
+gene_median_exp = rse_phase1_filter@assays@data$counts %>% rowMedians
+# gene_vars = rse_phase1_controls@assays@data$counts %>% rowVars
+gene_median_exp %>% tbl_df %>% rename(median=value) %>% 
+  ggplot(aes(x=log10(median))) + geom_histogram(binwidth=.1, fill='skyblue') +
+  scale_x_continuous(labels=function(x) 10^x, breaks=log10(c(1,2,3,4,5,10,100,10000,1e6))) +
+  ylab('n genes') + xlab('log10(median expression of gene)') +
+  theme_classic() + geom_vline(xintercept=log10(10), linetype=2, color='red')
+  
+```
+
+Variance
+
+```{r}
+gene_vars = rse_phase1_filter@assays@data$counts %>% rowVars
+# gene_vars = gene_vars[gene_median_exp > 10]
+q = quantile(gene_vars, .3)
+gene_vars %>% tbl_df %>%
+  mutate(median_10 = gene_median_exp > 10) %>% 
+  ggplot(aes(x=log10(value), fill=median_10)) + geom_histogram(binwidth=.1) +
+  scale_x_continuous(labels=function(x) 10^x) + 
+  #, breaks=log10(c(1,2,3,4,5,10,100,10000,1e6))) +
+  ylab('n genes') + xlab('log10(variance in expression of gene)') +
+  theme_classic() #+ geom_vline(xintercept=log10(q), linetype=2, color='red')
+```
+
+```{r}
+data.frame(median10 = gene_median_exp >= 10) %>% count(median10)
+```
+
+Preprocess steps:
+
+1.  Remove NAs (already done)
+2.  Drop nonexpressed genes using a threshold for median count
+3.  Drop genes with minimal variance across samples, keeping top n
+4.  Drop outlier samples using ZK method (network based, Oldham, Langfelder, and Horvath 2012)
+5.  PC correction (Parsana et al. (2019))
+
+```{r}
+clean_phase1_controls = rse_phase1_filter %>% 
+  exp_preprocess(remove_nonexpressed=T,
+                 min_exp=10,
+                 variance_filter=F,
+                 n=2000,
+                 Zk_filtering=T,
+                 cor_method='pearson',
+                 remove_confounders=F,
+                 vstransform=T
+                 )
+```
+
+Exploratory plots
+
+```{r}
+x = clean_phase1_controls
+colData(x) %<>% as.data.frame %>% 
+  mutate(Age=cut(Age, breaks=c(-1,11,15,18,25,45,Inf))) %>% 
+  select('Age') %>% DataFrame
+plot_PCA(x)
+```
+
+```{r}
+x = clean_phase1_controls
+colData(x) %<>%  as.data.frame %>% 
+  mutate(Age=cut(Age, breaks=c(-1,11,15,18,25,45,Inf))) %>% 
+  select('Sex','Age') %>% DataFrame
+plot_heatmap(x, type = "samplecor", show_colnames=F)
+```
+
+```{r}
+x = clean_phase1_controls
+colData(x) %<>% as.data.frame %>% 
+  mutate(Age=cut(Age, breaks=c(-1,11,15,18,25,45,Inf))) %>% 
+  select('Sex','Age') %>% DataFrame
+plot_heatmap(x, type = "expr", show_colnames=F, log_trans=T)
+```
+
+```{r}
+
+```
+
+# Now try WGCNA
+
+```{r}
+sft <- SFT_fit(clean_phase1_controls, net_type = "signed hybrid", cor_method = "pearson")
+```
+
+```{r}
+sft$plot
+```
+
+```{r}
+power = sft$power
+# power = 6
+net <- exp2gcn(
+    clean_phase1_controls, net_type = "signed", SFTpower = power, 
+    cor_method = "pearson"
+)
+```
+
+```{r, fig.height=8, fig.width=8}
+#| fig-height: 20
+order = net$genes_and_modules %>% group_by(Modules) %>% summarize(n=n()) %>% arrange(-n)
+MEs = net$MEs
+MEs$RIN = colData(clean_phase1_controls)[,'RIN']
+MEs_pivot = MEs %>% tibble %>% 
+  pivot_longer(-RIN, names_to='module') %>%
+  mutate(module = str_replace(module, 'ME', '')) %>% 
+  mutate(module = factor(module, ordered=T, levels=order$Modules))
+
+cor = MEs_pivot %>% 
+  group_by(module) %>% 
+  summarise(r=cor.test(RIN, value)$estimate,
+            p=cor.test(RIN, value)$p.value
+            ) %>% 
+  mutate(star = case_when(p < 0.001 ~ '***',p < 0.01 ~ '**',p < 0.05 ~ '*', T ~ ''))
+
+MEs_pivot %>% 
+  ggplot(aes(x=RIN, y=value)) + 
+  geom_point(alpha=.5, size=1, aes(fill=module), shape=21, color='black') +
+  geom_text(data=cor, aes(x=5, y=-.2, label=paste('r =', round(r,2), star)), hjust=0) +
+  geom_smooth(method='lm') +
+  scale_fill_identity() +
+  #geom_hex() +
+  # scale_fill_viridis_b() +
+  facet_wrap(~module) + 
+  ylab('eigengene expression') +
+  theme_classic() + theme(aspect.ratio=1) +
+  ggtitle('Sample cluster expression vs RIN')
+```
+
+```{r}
+plot_dendro_and_colors(net)
+```
+
+```{r}
+plot_dendro_and_colors(net)
+```
+
+```{r}
+vars_ = clean_phase1_controls@assays@data@listData[[1]] %>% as.matrix %>% rowVars
+df_module_vars = net$genes_and_modules %>% 
+  mutate(variances=vars_) %>% 
+  group_by(Modules) %>% mutate(n = n()) %>% arrange(-n)
+df_module_vars %>% 
+  mutate(Modules = factor(Modules, ordered=T, levels=unique(.$Modules))) %>% 
+  ggplot(aes(x=Modules, y=log10(variances), color=Modules)) + 
+  geom_jitter(size=.1, alpha=.5) + 
+  geom_boxplot(width=.3, outlier.shape=NA) +
+  scale_color_identity() +
+  theme_classic() + theme(axis.text.x=element_text(angle=30, hjust=1))
+```
+
+```{r}
+plot_eigengene_network(net)
+```
+
+```{r}
+plot_ngenes_per_module(net)
+```
+
+```{r}
+x = clean_phase1_controls
+colData(x) %<>% as.data.frame %>% 
+  mutate(Age=cut(Age, breaks=c(-1,11,15,18,25,45,Inf))) %>% 
+  dplyr::select('Age') %>% DataFrame
+module_trait_cor(
+    exp = x, MEs = net$MEs, cor_method = "pearson"
+)
+```
+
+Set up GO annotation using biomart
+
+```{r}
+ensembl = useMart("ensembl", dataset="hsapiens_gene_ensembl")
+atts = listAttributes(ensembl)
+GO = getBM(mart=ensembl, attributes=c('ensembl_gene_id','name_1006'))
+```
+
+```{r}
+enrichment <- module_enrichment(
+    net = net,
+    background_genes = rownames(clean_phase1_controls),
+    annotation = GO,
+    bp_param = BiocParallel::MulticoreParam()
+)
+l = list()
+for (e in enrichment$Module %>% unique) l[[e]] = enrichment %>% filter(Module==e) %>% .$TermID
+lapply(l, `length<-`, max(lengths(l))) %>% bind_cols %>% View
+```
+
+```{r}
+module_stability(clean_phase1_controls, net, nRuns = 3)
+```
+
+```{r}
+x = clean_phase1_controls
+colData(x) %<>% as.data.frame %>% 
+  mutate(Age=cut(Age, breaks=c(-1,1,18,Inf))) %>% 
+  select('Age') %>% DataFrame
+
+module_trait_cor(
+    exp = x, MEs = net$MEs, cor_method = "pearson"
+)
+```
+
+```{r}
+x = clean_phase1_controls
+colData(x) %<>% as.data.frame %>% 
+  mutate(Age=cut(Age, breaks=c(-1,1,18,Inf))) %>% 
+  select('Age') %>% DataFrame
+
+plot_expression_profile(
+    exp = x, 
+    net = net, 
+    plot_module = TRUE, 
+    modulename = "darkturquoise"
+) + theme(axis.text.x=element_blank(),axis.ticks.x=element_blank())
+```
+
+# Test WGCNA with tutorial data
+
+```{r}
+femData = read.csv("../data/tutorial/FemaleLiver-Data/LiverFemale3600.csv")
+datExpr0 = as.data.frame(t(femData[, -c(1:8)]));
+names(datExpr0) = femData$substanceBXH;
+rownames(datExpr0) = names(femData)[-c(1:8)];
+```
+
+```{r}
+goodSamplesGenes(datExpr0, verbose=3)$allOK
+# datExpr0 %>% tibble
+```
+
+```{r}
+traitData = read.csv("../data/tutorial/FemaleLiver-Data/ClinicalTraits.csv");
+dim(traitData)
+names(traitData)
+# remove columns that hold information we do not need.
+allTraits = traitData[, -c(31, 16)];
+allTraits = allTraits[, c(2, 11:36) ];
+dim(allTraits)
+names(allTraits)
+# Form a data frame analogous to expression data that will hold the clinical traits.
+femaleSamples = rownames(datExpr);
+traitRows = match(femaleSamples, allTraits$Mice);
+datTraits = allTraits[traitRows, -1];
+rownames(datTraits) = allTraits[traitRows, 1];
+collectGarbage();
+```
+
+```{r}
+# Re-cluster samples
+sampleTree2 = hclust(dist(datExpr), method = "average")
+# Convert traits to a color representation: white means low, red means high, grey means missing entry
+traitColors = numbers2colors(datTraits, signed = FALSE);
+# Plot the sample dendrogram and the colors underneath.
+plotDendroAndColors(sampleTree2, traitColors,
+groupLabels = names(datTraits),
+main = "Sample dendrogram and trait heatmap")
+```
+
+```{r}
+sampleTree = hclust(dist(datExpr0), method = "average")
+par(cex = 0.6);
+par(mar = c(0,4,2,0))
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5,
+cex.axis = 1.5, cex.main = 2)
+abline(h = 15, col = "red");
+# Determine cluster under the line
+clust = cutreeStatic(sampleTree, cutHeight = 15, minSize = 10)
+# table(clust)
+keepSamples = (clust==1)
+datExpr = datExpr0[keepSamples, ]
+nGenes = ncol(datExpr)
+nSamples = nrow(datExpr)
+```
+
+```{r}
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+# Call the network topology analysis function
+sft = pickSoftThreshold(datExpr, powerVector = powers, verbose = 5)
+# Plot the results:
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+labels=powers,cex=cex1,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.90,col="red")
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+```
+
+```{r}
+net = blockwiseModules(datExpr, power = 6, minModuleSize = 30,
+reassignThreshold = 0, mergeCutHeight = 0.25,
+numericLabels = TRUE, pamRespectsDendro = FALSE,
+saveTOMs = TRUE,
+saveTOMFileBase = "femaleMouseTOM",
+verbose = 3)
+```
+
+```{r}
+# Convert labels to colors for plotting
+mergedColors = labels2colors(net$colors)
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
+"Module colors",
+dendroLabels = FALSE, hang = 0.03,
+addGuide = TRUE, guideHang = 0.05)
+```
+
+```{r}
+moduleLabels = net$colors
+moduleColors = labels2colors(net$colors)
+MEs = net$MEs;
+geneTree = net$dendrograms[[1]];
+save(MEs, moduleLabels, moduleColors, geneTree,
+file = "FemaleLiver-02-networkConstruction-auto.RData")
+```
+
+```{r}
+# Calculate topological overlap anew: this could be done more efficiently by saving the TOM
+# calculated during module detection, but let us do it again here.
+dissTOM = 1-TOMsimilarityFromExpr(datExpr, power = 6);
+# Transform dissTOM with a power to make moderately strong connections more visible in the heatmap
+plotTOM = dissTOM^7;
+# Set diagonal to NA for a nicer plot
+diag(plotTOM) = NA;
+# Call the plot function
+sizeGrWindow(9,9)
+TOMplot(plotTOM, geneTree, moduleColors, main = "Network heatmap plot, all genes")
+```
+
+```{r}
+# Recalculate module eigengenes
+MEs = moduleEigengenes(datExpr, moduleColors)$eigengenes
+# Isolate weight from the clinical traits
+weight = as.data.frame(datTraits$weight_g);
+names(weight) = "weight"
+# Add the weight to existing module eigengenes
+MET = orderMEs(cbind(MEs, weight))
+# Plot the relationships among the eigengenes and the trait
+sizeGrWindow(5,7.5);
+par(cex = 0.9)
+plotEigengeneNetworks(MET, "", marDendro = c(0,4,1,2), marHeatmap = c(3,4,1,2), cex.lab = 0.8, xLabelsAngle
+= 90)
+
+# Plot the dendrogram
+sizeGrWindow(6,6);
+par(cex = 1.0)
+plotEigengeneNetworks(MET, "Eigengene dendrogram", marDendro = c(0,4,2,0),
+plotHeatmaps = FALSE)
+# Plot the heatmap matrix (note: this plot will overwrite the dendrogram plot)
+par(cex = 1.0)
+plotEigengeneNetworks(MET, "Eigengene adjacency heatmap", marHeatmap = c(3,4,2,2),
+plotDendrograms = FALSE, xLabelsAngle = 90)
+```

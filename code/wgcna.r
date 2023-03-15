@@ -38,7 +38,7 @@ get_soft_threshold <- function(rse, assayname = 'ranknorm', threads = NULL) {
 # Fit WGCNA
 fit_WGCNA <- function(rse, power, assayname = "ranknorm", threads = NULL, 
                       saveTOMs = FALSE, loadTOM = FALSE, fileBase = "test",
-                      blocks = NULL) {
+                      blocks = NULL, verbose=1) {
     if (!is.null(threads)) {
         WGCNA::allowWGCNAThreads(nThreads = threads)
         WGCNAnThreads()
@@ -68,7 +68,7 @@ fit_WGCNA <- function(rse, power, assayname = "ranknorm", threads = NULL,
     # Parameters for WGCNA
     args <- list(
         datExpr = exp,
-        randomSeed = 123, verbose = 5, maxBlockSize = 9000,
+        randomSeed = 123, verbose = verbose, maxBlockSize = 9000,
         TOMType = "signed",
         loadTOM = loadTOM, blocks = blocks,
         saveTOMs = saveTOMs,
@@ -142,7 +142,7 @@ make_nets <- function(rse_list, cor_method = "pearson", assayname = NULL) {
     # Get max of powers
     power <- to_vec(for(sft in sft_list) sft$power) %>% max
     # Fit nets
-    net_list <- lapply(rse_list, function(x) fit_WGCNA(x, power, threads=9))
+    net_list <- lapply(rse_list, function(x) fit_WGCNA(x, power, threads=9, verbose=0))
 
     return(net_list)
 }
